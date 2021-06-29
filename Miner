@@ -1,0 +1,697 @@
+#include <a_samp> // SA-MP Team
+#include <dini> // DracoBlue
+#include <zcmd> // Zeex
+#include <streamer> // Incognito
+
+// Macros
+#define RESET_ORE (2) // Waktu reset ore (menit), Atur sesuka kalian
+#define public:%0(%1)           forward %0(%1); public %0(%1)
+
+// Harga2 ore / gaji, DLL. ubah sendiri :)
+#define HARGA_COAL (1000)
+#define HARGA_IRON (3000)
+#define HARGA_GOLD (5000)
+
+#define HARGA_BOX (3000)
+#define BONUS_TRUCKER_MIN (3000)
+#define BONUS_TRUCKER_MAX (7000) // 3000 + 7000 = Max 10000
+
+#define HARGA_SEWA_SADLER (5000)
+
+#define PreloadAnimLib(%1,%2)	ApplyAnimation(%1,%2,"null",0.0,0,0,0,0,0)
+
+//
+#define VEHICLE_COORD_TYPE_BOOT		(1)
+#define VEHICLE_COORD_TYPE_BONNET	(2)
+
+// enum and vars
+enum
+{
+	DIALOG_MENU_JOB = 1,
+	DIALOG_MINING_WORK,
+	DIALOG_TRUCKER_WORK,
+	DIALOG_JUAL_MINING,
+	DIALOG_DELAY,
+};
+
+enum sData
+{
+	ORE
+}
+
+enum pData
+{
+	bool: P_START_WORK,
+	bool: P_ON_WORK,
+    bool: P_START_WORK_TRUCK,
+    bool: P_HAS_CRATE,
+	P_COAL,
+	P_IRON,
+	P_GOLD,
+	P_GAJI,
+	P_DELAY,
+	P_DELAY_TRUCK,
+	P_RENT_CAR,
+	P_RENT_CAR_ATTACH[3]
+};
+
+new P_VAR[MAX_PLAYERS][pData],
+	V_ORE[MAX_VEHICLES],
+    S_VAR[sData],
+	Text3D: Label,
+    Kerja;
+
+new
+	Float: MinerCoords[][3] = {
+		{644.98309, 858.96478, -43.37333},
+		{613.70453, 869.70068, -43.74323},
+		{612.47327, 862.47260, -43.74323},
+		{606.05261, 874.45447, -43.74323},
+		{594.92310, 874.91901, -43.74323},
+		{636.27142, 864.19617, -43.37333},
+		{626.16016, 858.65741, -43.37333},
+		{632.97919, 832.90320, -43.37333},
+		{630.90106, 827.15222, -43.74323},
+		{618.00262, 845.51013, -43.37333},
+		{631.38647, 845.97382, -43.37333},
+		{619.78448, 867.33014, -43.37333},
+		{642.40656, 869.67175, -43.37333},
+		{629.83435, 871.05304, -43.37333},
+		{620.86450, 882.14423, -43.37333},
+		{630.01776, 882.67706, -43.37333},
+		{605.21118, 833.90619, -43.37333},
+		{616.59131, 819.21765, -43.37333},
+		{587.47858, 838.72992, -43.37333},
+		{600.64709, 848.76581, -43.37333},
+		{585.95648, 848.90607, -43.37333},
+		{577.79352, 855.25494, -43.37333},
+		{600.45715, 885.58337, -43.37333},
+		{609.54883, 887.87390, -43.37333},
+		{589.55688, 889.28375, -43.37333},
+		{602.31274, 895.14557, -43.37333}
+	};
+
+new bool: OreMined[sizeof MinerCoords] = {false, ...},
+	bool: OreUsed[sizeof MinerCoords] = {false, ...},
+	OreObject[sizeof MinerCoords],
+	Text3D: OreLabel[sizeof MinerCoords];
+
+public OnFilterScriptInit()
+{
+	print("\n------------------------------------------");
+	print("Miner activity Loaded | Author: Palwa");
+	print("--------------------------------------------\n");
+
+	CreateOre();
+
+	Kerja = CreatePickup(1273, 23, 587.6740, 874.6027, -42.4973, -1);
+	CreatePickup(1271, 23, 816.6691, 856.7302, 12.8418, -1);
+
+	new label[129];
+	format(label, sizeof(label), "Stok ORE Gudang (/takeore)\n{FFFF00}%d Bijih Tersisa", S_VAR[ORE]);
+	Label = CreateDynamic3DTextLabel(label, 0x1E90FFFF, 816.6691, 856.7302, 12.8418 + 0.3, 5.0);
+	
+	if(dini_Exists("ORE.txt")){
+		S_VAR[ORE] = dini_Int("ORE.txt", "ORE");
+	}
+	else dini_Create("ORE.txt"), dini_IntSet("ORE.txt", "ORE", S_VAR[ORE]);
+
+	CreateDynamic3DTextLabel("Pabrik ORE\nGunakan {FFFF00}/unloadore", 0x1E90FFFF, -23.6586, -272.8024, 5.5108 + 0.3, 5.0);
+
+	CreateDynamicMapIcon(587.6740, 874.6027, -42.4973, 11, 0);
+
+	SetTimer("MinerUpdateTimer", 1000, true);
+	SetTimer("ResetOre", RESET_ORE * 1000 * 60, true);
+	
+	new label_string[156];
+
+	format(label_string, sizeof(label_string), "Stok ORE Gudang (/takeore)\n{FFFF00}%d Ore Tersisa", S_VAR[ORE]);
+    UpdateDynamic3DTextLabelText(Label, 0x1E90FFFF, label_string);
+	return 1;
+}
+
+public OnFilterScriptExit()
+{
+    dini_IntSet("ORE.txt", "ORE", S_VAR[ORE]);
+	for(new i; i < MAX_PLAYERS; i++)
+	{
+	    OnPlayerDisconnect(i, 1);
+	}
+	
+	return 1;
+}
+
+public OnPlayerConnect(playerid)
+{
+	SetPVarInt(playerid, "FirstSpawn", 1);
+	return 1;
+}
+
+public OnPlayerSpawn(playerid)
+{
+	if(GetPVarInt(playerid, "FirstSpawn") == 1)
+	{
+	    DeletePVar(playerid, "FirstSpawn");
+	}
+	SetPVarInt(playerid, "skin", GetPlayerSkin(playerid));
+	
+	PreloadPlayerAnims(playerid);
+	return 1;
+}
+
+public OnPlayerPickUpPickup(playerid, pickupid)
+{
+	if(pickupid == Kerja)
+	{
+	    ShowPlayerDialog(playerid, DIALOG_MENU_JOB, DIALOG_STYLE_LIST, "Pekerjaan", "Mining\nPengantar bahan tambang\nSewa Sadler", "Pilih", "Tutup");
+	}
+	return 1;
+}
+
+public OnPlayerDeath(playerid, killerid, reason)
+{
+	ResetPlayerVar(playerid);
+	SetPlayerSkin(playerid, GetPVarInt(playerid, "skin"));
+
+	return 1;
+}
+
+public OnPlayerDisconnect(playerid, reason)
+{
+	ResetPlayerVar(playerid);
+
+	return 1;
+}
+
+public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
+{
+	switch(dialogid)
+	{
+		case DIALOG_MENU_JOB:
+		{
+		    if(response)
+		    {
+		        switch(listitem)
+		        {
+		            case 0:
+		            {
+						if(P_VAR[playerid][P_ON_WORK] == false)
+						{
+          					if(P_VAR[playerid][P_START_WORK] == false)
+						    {
+						        if(P_VAR[playerid][P_DELAY] > 0) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu masih dalam delay pekerjaan (/mydelay)!");
+
+						        SetPlayerSkin(playerid, 27);
+						        SendClientMessage(playerid, 0xff0000, "<!> Kamu mulai bekerja sebagai miner, cari bebatuan terdekat dan gunakan /mineore");
+						        P_VAR[playerid][P_ON_WORK] = true;
+						        P_VAR[playerid][P_START_WORK] = true;
+						    }
+						    else SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu sedang dalam pekerjaan lain");
+						}
+						else
+						{
+						    if(P_VAR[playerid][P_START_WORK] == true)
+						    {
+						        SetPlayerSkin(playerid, GetPVarInt(playerid, "skin"));
+						        P_VAR[playerid][P_ON_WORK] = false;
+						        P_VAR[playerid][P_START_WORK] = false;
+
+						        P_VAR[playerid][P_DELAY] = 10 * 60;
+
+								GivePlayerMoney(playerid, P_VAR[playerid][P_COAL] * HARGA_COAL + P_VAR[playerid][P_IRON] * HARGA_IRON + P_VAR[playerid][P_GOLD] * HARGA_GOLD);
+
+								new str[129];
+								format(str, sizeof(str), "<!> Kamu menyelesaikan pekerjaan kamu dan mendapat uang sebanyak {08F508}$%d", P_VAR[playerid][P_COAL] * HARGA_COAL + P_VAR[playerid][P_IRON] * HARGA_IRON + P_VAR[playerid][P_GOLD] * HARGA_GOLD);
+								SendClientMessage(playerid, 0xff0000, str);
+							}
+						}
+					}
+					case 1:
+					{
+					    if(P_VAR[playerid][P_ON_WORK] == false)
+						{
+          					if(P_VAR[playerid][P_START_WORK] == false)
+						    {
+						        if(P_VAR[playerid][P_DELAY_TRUCK] > 0) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu masih dalam delay pekerjaan (/mydelay)!");
+
+						        SetPlayerSkin(playerid, 27);
+						        SendClientMessage(playerid, 0xff0000, "<!> Kamu mulai bekerja sebagai trucker, pergi ambil box di pos miner dengan /takeore. GPS gunakan /tgps");
+						        SendClientMessage(playerid, 0xff0000, "<!> Kamu memerlukan mobil sadler untuk pekerjaan ini, gunakan mobil pribadi / sewa lah satu di pusat miner");
+						        P_VAR[playerid][P_ON_WORK] = true;
+						        P_VAR[playerid][P_START_WORK_TRUCK] = true;
+						    }
+						    else SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu sedang dalam pekerjaan lain");
+						}
+						else
+						{
+						    if(P_VAR[playerid][P_START_WORK_TRUCK] == true)
+						    {
+						        SetPlayerSkin(playerid, GetPVarInt(playerid, "skin"));
+						        P_VAR[playerid][P_ON_WORK] = false;
+						        P_VAR[playerid][P_START_WORK_TRUCK] = false;
+
+						        P_VAR[playerid][P_DELAY_TRUCK] = 1 * 60;
+
+
+							}
+						}
+					}
+					case 2:
+					{
+						if(P_VAR[playerid][P_START_WORK_TRUCK] == false) return SendClientMessage(playerid, 0xCECECEFF, "<!> Sewa sadler hanya diperuntukkan untuk kurir pengantar");
+					    
+						P_VAR[playerid][P_RENT_CAR] = CreateVehicle(543, 820.3481, 839.6915, 10.8538, 295.0, -1, -1, 600);
+						GivePlayerMoney(playerid, -HARGA_SEWA_SADLER);
+
+						new str[129];
+						format(str, sizeof(str), "<!> Kamu berhasil menyewa Sadler seharga {FFFF00}$%d", HARGA_SEWA_SADLER);
+						SendClientMessage(playerid, 0xff0000, str);
+
+						PutPlayerInVehicle(playerid, P_VAR[playerid][P_RENT_CAR], 0);
+					}
+				}
+			}
+		}
+	}
+	return 1;
+}
+
+// Commands
+
+CMD:mineore(playerid, params[])
+{
+	new id = GetClosestOre(playerid);
+
+	if(!P_VAR[playerid][P_START_WORK]) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu belum mulai bekerja");
+
+	if(id == -1) return SendClientMessage(playerid, 0xCECECEFF, "<!> Tidak ditemukan Batu terdekat!");
+
+	if(OreMined[id]) return SendClientMessage(playerid, 0xCECECEFF, "<!> Batu ini sudah ditambang!");
+
+	if(OreUsed[id]) return SendClientMessage(playerid, 0xCECECEFF, "<!> Seseorang sedang menambang batu ini, cari batu yang lain!");
+
+    PreloadPlayerAnims(playerid);
+    
+    ApplyAnimation(playerid, "BASEBALL", "Bat_4", 3.1, 0, 0, 0, 0, 20000, 1);
+    GameTextForPlayer(playerid, "Mining", 7500, 4);
+    SendClientMessage(playerid, 0xff0000, "<!> Kamu mulai menambang batu ini, tunggu dan tetaplah di posisi mu");
+
+    OreUsed[id] = true;
+
+    SetPVarInt(playerid, "id", id);
+
+    SetTimerEx("Mining", 10000, false, "i", playerid);
+	TogglePlayerControllable(playerid, false);
+	return 1;
+}
+
+CMD:mydelay(playerid, params[])
+{
+	new dialog[256];
+	format(dialog, sizeof(dialog),
+	"Delay Mining  -->  %02d:%02d\n"\
+	"Delay Delivery  -->  %02d:%02d",
+	P_VAR[playerid][P_DELAY] / 60, P_VAR[playerid][P_DELAY] % 60,
+	P_VAR[playerid][P_DELAY_TRUCK] / 60, P_VAR[playerid][P_DELAY_TRUCK] % 60
+	);
+	ShowPlayerDialog(playerid, DIALOG_DELAY, DIALOG_STYLE_MSGBOX, "Job Delay", dialog, "Tutup", "");
+	return 1;
+}
+
+CMD:takeore(playerid, params[])
+{
+	if(!P_VAR[playerid][P_START_WORK_TRUCK]) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu harus bekerja sebagai trucker miner, pergi ke Quarry untuk mendapatkannya");
+
+	if(!IsPlayerInRangeOfPoint(playerid, 2.0, 816.6691, 856.7302, 12.8418)) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu harus berada di pengambilan ore");
+
+	if(S_VAR[ORE] < 10) return SendClientMessage(playerid, 0xCECECEFF, "<!> Gudang sedang kehabisan bijih, tunggu para miner atau kembali lain kali");
+
+	if(P_VAR[playerid][P_HAS_CRATE]) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu sedang mengangkat box yang lain, simpan itu terlebih dahulu!");
+
+	SetPlayerAttachedObject(playerid, 7, 905, 1, 0.11,0.36,0.0);
+	SendClientMessage(playerid, 0xff0000, "<!> Kamu mengambil sebuah batu untuk dikirimkan, pergi ke bagasi sadler dan gunakan {FFFF00}/loadore");
+
+	P_VAR[playerid][P_HAS_CRATE] = true;
+
+    new label_string[156];
+
+	format(label_string, sizeof(label_string), "Stok ORE Gudang (/takeore)\n{FFFF00}%i Ore Tersisa", S_VAR[ORE]);
+    UpdateDynamic3DTextLabelText(Label, 0x1E90FFFF, label_string);
+    
+	S_VAR[ORE] -= 10;
+	return 1;
+}
+
+CMD:loadore(playerid, params[])
+{
+	if(!P_VAR[playerid][P_START_WORK_TRUCK]) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu bukan pekerja trucker miner");
+
+	if(!P_VAR[playerid][P_HAS_CRATE]) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu sedang tidak membawa bijih apapun");
+
+	if(GetPlayerState(playerid) != PLAYER_STATE_ONFOOT) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu harus sedang jalan kaki");
+
+	new Float: x, Float: y, Float: z,
+	    Float: angle, Float: distance,
+	    str[129],
+		vehicleid = GetClosestVehicle(playerid, 3.0);
+
+	if(vehicleid == INVALID_VEHICLE_ID) return SendClientMessage(playerid, 0xCECECEFF, "<!> Tidak ada kendaraan di sekitar");
+
+	GetCoordVehicle(vehicleid, VEHICLE_COORD_TYPE_BOOT, x, y, z, angle, distance);
+	if(!IsPlayerInRangeOfPoint(playerid, 2.5, x, y, z)) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu harus dekat bagasi mobil!");
+
+	if(GetVehicleModel(vehicleid) != 543) return SendClientMessage(playerid, 0xCECECEFF, "<!> Model kendaraan ini bukan model Sadler");
+
+	if(V_ORE[vehicleid] >= 5) return SendClientMessage(playerid, 0xCECECEFF, "<!> Mobil ini sudah penuh kotak ORE");
+
+	switch(V_ORE[vehicleid])
+	{
+	    case 0:
+	    {
+	        P_VAR[playerid][P_RENT_CAR_ATTACH][0] = CreateDynamicObject(905,0.0,0.0,-1000.0,0.0,0.0,0.0,-1,-1,-1,300.0,300.0);
+	        AttachDynamicObjectToVehicle(P_VAR[playerid][P_RENT_CAR_ATTACH][0], vehicleid, 0.540, -1.380, 0.020, 0.000, 0.000, 0.000);
+	    }
+	    case 1:
+	    {
+	        P_VAR[playerid][P_RENT_CAR_ATTACH][1] = CreateDynamicObject(905,0.0,0.0,-1000.0,0.0,0.0,0.0,-1,-1,-1,300.0,300.0);
+	        AttachDynamicObjectToVehicle(P_VAR[playerid][P_RENT_CAR_ATTACH][1], vehicleid, 0.000, -2.191, 0.060, 0.000, 0.000, 0.000);
+	    }
+	    case 2:
+	    {
+	        P_VAR[playerid][P_RENT_CAR_ATTACH][2] = CreateDynamicObject(905,0.0,0.0,-1000.0,0.0,0.0,0.0,-1,-1,-1,300.0,300.0);
+	        AttachDynamicObjectToVehicle(P_VAR[playerid][P_RENT_CAR_ATTACH][2], vehicleid, -0.260, -1.200, 0.270, 0.000, 0.000, -72.600);
+	    }
+	}
+	Streamer_Update(playerid);
+	
+	V_ORE[vehicleid]++;
+
+	PreloadPlayerAnims(playerid);
+	ApplyAnimation(playerid, "CARRY", "putdwn", 2.0, 0, 0, 0, 0, 1);
+
+	format(str, sizeof(str), "<!> Kamu menempatkan ORE box pada mobil sadler! Box yang dimilikki sadler: {FFFF00}%d", V_ORE[vehicleid]);
+	SendClientMessage(playerid, 0xff0000, str);
+
+	P_VAR[playerid][P_HAS_CRATE] = false;
+	RemovePlayerAttachedObject(playerid, 7);
+	return 1;
+}
+
+CMD:tgps(playerid, params[])
+{
+	if(!P_VAR[playerid][P_START_WORK_TRUCK]) return SendClientMessage(playerid, 0xff0000, "<!> Kamu bukan pekerja trucker");
+
+	SetPlayerMapIcon(playerid, 99, -23.6586, -272.8024, 5.5108, 11, -1, 3);
+	SendClientMessage(playerid, 0xff0000, "<!> Kamu berhasil menyalakan GPS trucker, gunakan /dgps untuk mematikannya kapan saja!");
+	return 1;
+}
+
+CMD:dgps(playerid, params[])
+{
+	RemovePlayerMapIcon(playerid, 99);
+	return 1;
+}
+
+CMD:unloadore(playerid, params[])
+{
+	new vehicleid = GetPlayerVehicleID(playerid), str[129];
+	if(!P_VAR[playerid][P_START_WORK_TRUCK]) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu bukan pekerja trucker miner");
+
+	if(!IsPlayerInRangeOfPoint(playerid, 5.0, -23.6586, -272.8024, 5.5108)) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu tidak sedang berada di pabrik ORE, gunakan /tgps");
+
+	if(GetVehicleModel(vehicleid) != 543) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu sedang tidak mengendarai Sadler");
+
+	if(V_ORE[vehicleid] < 1) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kendaraan kamu tidak memilikki bijih sama sekali");
+
+	GivePlayerMoney(playerid, V_ORE[vehicleid] * HARGA_BOX);
+
+	format(str, sizeof(str), "<!> Kamu menjual %d kotak ORE ke pabrik dan mendapat uang sebesar {FFFF00}$%d", V_ORE[vehicleid], V_ORE[vehicleid] * HARGA_BOX);
+	SendClientMessage(playerid, 0xff0000, str);
+
+	if(V_ORE[vehicleid] == 5)
+	{
+	    new rand = BONUS_TRUCKER_MIN + random(BONUS_TRUCKER_MAX);
+
+	    format(str, sizeof(str), "<!> Kamu menjual bijih dengan kapasitas penuh dan mendapat bonus sebanyak {ffff00}$%d", rand);
+	    SendClientMessage(playerid, 0xff0000, str);
+
+	    GivePlayerMoney(playerid, rand);
+	}
+
+	V_ORE[vehicleid] = 0;
+
+	SetPlayerSkin(playerid, GetPVarInt(playerid, "skin"));
+    P_VAR[playerid][P_ON_WORK] = false;
+    P_VAR[playerid][P_START_WORK_TRUCK] = false;
+
+    P_VAR[playerid][P_DELAY_TRUCK] = 10 * 60;
+
+	return 1;
+}
+
+// Timer Funcs / Declarations
+public: LoadData(playerid,name[],value[])
+{
+	/*INI_Int("Delay", P_VAR[playerid][P_DELAY]);
+    INI_Int("DelayTruck", P_VAR[playerid][P_DELAY_TRUCK]);*/
+	return 1;
+}
+
+public: MinerUpdateTimer()
+{
+	new label_string[156];
+
+	for(new i; i < sizeof(MinerCoords); i ++)
+	{
+	    switch(OreMined[i])
+	    {
+	        case false:
+			{
+				format(label_string, sizeof label_string, "{ffff00}Miner Ore\n{FFFFFF}Status: {08F508}Ready\n{ffff00}/mineore");
+				UpdateDynamic3DTextLabelText(OreLabel[i], -1, label_string);
+			}
+			case true:
+			{
+				format(label_string, sizeof label_string, "{ffff00}Miner Ore\n{FFFFFF}Status: {ff0000}Mined\n{ffff00}/mineore");
+				UpdateDynamic3DTextLabelText(OreLabel[i], -1, label_string);
+			}
+		}
+	}
+
+	for(new i; i < MAX_PLAYERS; i ++)
+	{
+	    CallLocalFunction("OnPlayerTimer", "i", i);
+	}
+
+	return 1;
+}
+
+public: OnPlayerTimer(playerid)
+{
+	if(IsPlayerConnected(playerid))
+	{
+	    if(P_VAR[playerid][P_DELAY] > 0)
+	    {
+	        P_VAR[playerid][P_DELAY]--;
+
+
+			if(P_VAR[playerid][P_DELAY] < 1)
+				SendClientMessage(playerid, 0xff0000, "<!> Delay pekerjaan telah berakhir");
+		}
+
+		if(P_VAR[playerid][P_DELAY_TRUCK] > 0)
+	    {
+	        P_VAR[playerid][P_DELAY_TRUCK]--;
+
+
+			if(P_VAR[playerid][P_DELAY_TRUCK] < 1)
+				SendClientMessage(playerid, 0xff0000, "<!> Delay pekerjaan telah berakhir");
+		}
+	}
+	return 1;
+}
+
+public: ResetOre()
+{
+    for(new i; i < sizeof(MinerCoords); ++i)
+	{
+	    OreMined[i] = false;
+	    OreUsed[i] = false;
+	    SetDynamicObjectPos(OreObject[i], MinerCoords[i][0], MinerCoords[i][1], MinerCoords [i][2]);
+	    
+		UpdateDynamic3DTextLabelText(OreLabel[i], -1, "{ffff00}Miner Ore\n{FFFFFF}Status: {08F508}Ready\n{ffff00}/mineore");
+	}
+	return 1;
+}
+
+public: Mining(playerid)
+{
+	new id = GetClosestOre(playerid);
+	
+	new label_string[156];
+
+	format(label_string, sizeof(label_string), "Stok ORE Gudang (/takeore)\n{FFFF00}%d Ore Tersisa", S_VAR[ORE]);
+    UpdateDynamic3DTextLabelText(Label, 0x1E90FFFF, label_string);
+    
+	TogglePlayerControllable(playerid, true);
+
+	OreUsed[GetPVarInt(playerid, "id")] = false;
+
+	if(id == -1) return SendClientMessage(playerid, 0xCECECEFF, "<!> Kamu pergi meninggalkan batu yang sedang kau tambang!");
+
+	OreMined[id] = true;
+
+	ClearAnimations(playerid);
+
+	new ore = 10 + random(20);
+
+	switch(random(1000))
+	{
+	    case 0..550:
+	    {
+	        new rand = 1 + random(3);
+	        P_VAR[playerid][P_COAL] += rand;
+		    SendClientMessage(playerid, 0xff0000, "<!> Kamu menambang batu dan menemukan beberapa {FFFFFF}coal");
+		}
+		case 551..800:
+		{
+	        P_VAR[playerid][P_IRON] += 1;
+		    SendClientMessage(playerid, 0xff0000, "<!> Kamu menambang batu dan menemukan sebuah {FFFFFF}iron");
+		}
+		case 801..999:
+		{
+	        P_VAR[playerid][P_GOLD] += 1;
+		    SendClientMessage(playerid, 0xff0000, "<!> Kamu menambang batu dan menemukan sebuah {FFFF00}emas!");
+		}
+	}
+	UpdateDynamic3DTextLabelText(OreLabel[id], -1, "{ffff00}Miner Ore\n{FFFFFF}Status: {FF0000}Mined\n{ffff00}/mineore");
+	
+	S_VAR[ORE] += ore;
+	return 1;
+}
+
+// Custom Functions
+stock GetCoordVehicle(vehicleid, type, &Float:x, &Float:y, &Float:z, &Float:angle, &Float:distance)
+{
+    GetVehicleModelInfo(GetVehicleModel(vehicleid), 1, x, distance, z);
+    distance = distance / 2 + 0.1;
+
+    GetVehiclePos(vehicleid, x, y, z);
+    GetVehicleZAngle(vehicleid, angle);
+
+	switch(type)
+	{
+		case VEHICLE_COORD_TYPE_BOOT:
+		{
+			x += (distance * floatsin(-angle+180, degrees));
+			y += (distance * floatcos(-angle+180, degrees));
+		}
+		case VEHICLE_COORD_TYPE_BONNET:
+		{
+			x -= (distance * floatsin(-angle+180, degrees));
+			y -= (distance * floatcos(-angle+180, degrees));
+		}
+		default:
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+stock GetClosestOre(playerid, Float: range = 3.5)
+{
+	new id = -1, Float: dist = range, Float: tempdist;
+	for(new i; i < sizeof(MinerCoords); ++i)
+	{
+	    tempdist = GetPlayerDistanceFromPoint(playerid, MinerCoords[i][0], MinerCoords[i][1], MinerCoords[i][2]);
+		if(tempdist > range) continue;
+		if(tempdist <= dist)
+		{
+			dist = tempdist;
+			id = i;
+			break;
+		}
+	}
+
+	return id;
+}
+
+stock GetClosestVehicle(playerid, Float: range = 3.0)
+{
+	new id = -1, Float: dist = range, Float: tempdist, Float: x, Float: y, Float: z;
+	for(new i; i < MAX_VEHICLES; ++i)
+	{
+	    GetVehiclePos(i, x, y, z);
+	    tempdist = GetPlayerDistanceFromPoint(playerid, x, y, z);
+		if(tempdist > range) continue;
+		if(tempdist <= dist)
+		{
+			dist = tempdist;
+			id = i;
+			break;
+		}
+	}
+
+	return id;
+}
+
+stock CreateOre()
+{
+    for(new i; i < sizeof MinerCoords; i ++)
+	{
+		OreLabel[i] = CreateDynamic3DTextLabel("{ffff00}Miner Ore\n{FFFFFF}Status: {08F508}Ready\n{ffff00}/mineore", 0xFFFFFFFF, MinerCoords[i][0], MinerCoords[i][1], MinerCoords[i][2], 5.0, _, _, _, -1, -1, _, 10.0);
+		OreObject[i] = CreateDynamicObject(1305, MinerCoords[i][0], MinerCoords[i][1], MinerCoords[i][2] - 0.65, 0.0000, 0.0000, 0.0000);
+	}
+}
+
+stock ResetPlayerVar(playerid)
+{
+	P_VAR[playerid][P_GOLD] = 0;
+	P_VAR[playerid][P_COAL] = 0;
+	P_VAR[playerid][P_IRON] = 0;
+	P_VAR[playerid][P_ON_WORK] = false;
+	P_VAR[playerid][P_START_WORK] = false;
+	P_VAR[playerid][P_START_WORK_TRUCK] = false;
+	P_VAR[playerid][P_HAS_CRATE] = false;
+	RemovePlayerAttachedObject(playerid, 3);
+	DestroyVehicle(P_VAR[playerid][P_RENT_CAR]);
+
+	for(new i; i < 3; i++)
+	{
+	    DestroyDynamicObject(P_VAR[playerid][P_RENT_CAR_ATTACH][i]);
+	    P_VAR[playerid][P_RENT_CAR_ATTACH][i] = -1;
+	}
+	
+	return 1;
+}
+
+stock PlayerName(playerid)
+{
+    new name[MAX_PLAYER_NAME];
+    GetPlayerName(playerid,name,sizeof(name));
+    for(new i = 0; i < MAX_PLAYER_NAME; i++)
+    {
+        if(name[i] == '_') name[i] = ' ';
+    }
+    return name;
+}
+
+stock PreloadPlayerAnims(playerid) {
+	PreloadAnimLib(playerid,"BOMBER");
+	PreloadAnimLib(playerid,"RAPPING");
+	PreloadAnimLib(playerid,"SHOP");
+	PreloadAnimLib(playerid,"BEACH");
+	PreloadAnimLib(playerid,"SMOKING");
+	PreloadAnimLib(playerid,"FOOD");
+	PreloadAnimLib(playerid,"ON_LOOKERS");
+	PreloadAnimLib(playerid,"DEALER");
+	PreloadAnimLib(playerid,"CRACK");
+	PreloadAnimLib(playerid,"CARRY");
+	PreloadAnimLib(playerid,"COP_AMBIENT");
+	PreloadAnimLib(playerid,"PARK");
+	PreloadAnimLib(playerid,"INT_HOUSE");
+	PreloadAnimLib(playerid,"FOOD");
+	PreloadAnimLib(playerid,"PED");
+}
+
